@@ -110,3 +110,18 @@ Day-to-day notes:
 - Updated iOS? The update silently unmounts the Developer Disk Image, which
   kills WDA. Unlock the phone and run `phone-harness up` — it re-mounts the
   image itself (the doctor names this too).
+
+## Step 5 — Build a Screen Time code viewer
+
+Set `SCREEN_TIME_CODE_EXE` in `.env` to the full output path (or a path relative
+to this repository), then build by running:
+
+```bat
+python scripts/generate_screen_time_code.py
+```
+
+The script generates a zero-padded four-digit code and builds a Windows
+executable at that path. Launch it to see an immediate countdown in a small,
+always-on-top window; the code appears when the 15 seconds are up. The code is
+embedded in the executable; keep the file private and rebuild it to generate a
+different code.

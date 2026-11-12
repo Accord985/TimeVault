@@ -9,4 +9,5 @@ mcp>=1.9,<2
 # demands (docs/ERRORS.md, 2026-08-16). Imported lazily inside signing.py, so
 # driving the phone never loads it.
 pymobiledevice3>=10.8
-
+# Packages exe files from python
+PyInstaller>=6.0

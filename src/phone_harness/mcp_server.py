@@ -47,6 +47,7 @@ _TOOLS = [
     helpers.current_page,
     helpers.goto_home_page,
     helpers.open_app,
+    helpers.enter_screen_time_code,
     helpers.open_apps,
     helpers.close_app,
     helpers.current_app,

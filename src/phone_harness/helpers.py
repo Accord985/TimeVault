@@ -959,6 +959,37 @@ def open_app(name: str, wait_seconds: float = 0.0) -> None:
         )
 
 
+def enter_screen_time_code(code: str) -> str:
+    """Open Settings > Screen Time and enter a four-digit Screen Time code.
+
+    The code is typed only when iOS visibly asks for the Screen Time
+    passcode. It is never included in the return value or action log.
+    """
+    if not isinstance(code, str) or len(code) != 4 or not code.isdigit():
+        raise ValueError("Screen Time code must be exactly four digits.")
+
+    open_app("Settings", wait_seconds=10)
+    if not find_text("Screen Time", exact=True):
+        scroll_until_found("Screen Time", max_scrolls=8, exact=True)
+    tap_text("Screen Time", exact=True)
+
+    prompt = wait_for_text("Enter Screen Time Passcode", timeout=8)
+    if prompt is None:
+        raise WDAError(
+            "Settings > Screen Time did not show the Screen Time passcode prompt; "
+            "no code was entered."
+        )
+
+    _invalidate_tree()
+    pad_tree = ui_tree()
+    with redact_actions("Screen Time code entry"):
+        _enter_passcode(client(), code, pad_tree)
+
+    if wait_for_text("Enter Screen Time Passcode", timeout=5) is not None:
+        raise WDAError("The Screen Time passcode prompt is still visible after entry.")
+    return "Screen Time code entered; the passcode prompt closed."
+
+
 def _leads_with(text: str, contact: str) -> bool:
     """Does a list-row label lead with the contact name? Pure (unit-tested).
 
@@ -2054,6 +2085,7 @@ __all__ = [
     "current_page",
     "goto_home_page",
     "open_app",
+    "enter_screen_time_code",
     "open_apps",
     "close_app",
     "current_app",
