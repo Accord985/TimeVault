@@ -47,8 +47,9 @@ If the menu still does not appear, force-close Settings and open it again.
 1. Install [Sideloadly](https://sideloadly.io).
 2. Download the newest prebuilt WDA ipa from
    https://github.com/appium/WebDriverAgent/releases
-   (file like `WebDriverAgentRunner-Runner-*.ipa`) and save it as
-   `wda/WebDriverAgent.ipa` in this repo.
+   (file like `WebDriverAgentRunner-Runne.ipa`, v16.15.1 worked for me.)
+3. Unzip the file, remove the folder ending with `.xctest.dSYM` because it raises weird errors 
+3. Put the .app folder inside `Payload`, zip that, rename it as an ipa file, and save it as `wda/WebDriverAgent.ipa` in this repo.
 3. In Sideloadly: select the ipa, select your iPhone, sign in with your
    (free) Apple ID, click Start.
 4. On the iPhone: Settings → General → VPN & Device Management → trust your

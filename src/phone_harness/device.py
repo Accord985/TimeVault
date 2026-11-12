@@ -104,6 +104,8 @@ def _run(args: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
         [exe, *pin_udid(args)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
@@ -362,6 +364,8 @@ def _pid_alive(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return str(pid) in proc.stdout
@@ -381,6 +385,8 @@ def _pid_image(pid: int) -> str:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         first = proc.stdout.strip().splitlines()
@@ -388,7 +394,7 @@ def _pid_image(pid: int) -> str:
             return first[0].split('","')[0].strip('"').lower()
         return ""
     try:
-        return Path(f"/proc/{pid}/comm").read_text().strip().lower()
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip().lower()
     except OSError:
         return ""
 
@@ -557,6 +563,8 @@ def _free_port(port: int) -> None:
             ["netstat", "-ano", "-p", "tcp"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except OSError:
@@ -575,6 +583,8 @@ def _free_port(port: int) -> None:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if "ios.exe" in info.stdout.lower():
@@ -597,6 +607,8 @@ def _netstat_ano_lines() -> list[str]:
             ["netstat", "-ano", "-p", "tcp"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         lines = proc.stdout.splitlines()
@@ -649,6 +661,8 @@ def lan_block_rule_active(rule_name: str = "phone-harness block LAN") -> bool:  
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
