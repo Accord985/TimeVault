@@ -1124,6 +1124,30 @@ class Handler(BaseHTTPRequestHandler):
                     # and a fresh client would redo session discovery mid-wake.
                     helpers.unlock(self.client)
                 self._json({"ok": True})
+            elif path == "/api/screen-time-code":
+                from . import helpers
+
+                previous_code = payload.get("previous_code")
+                set_directly = payload.get("set_directly")
+                if previous_code is not None and not isinstance(previous_code, str):
+                    self._json(
+                        {"ok": False, "error": "previous_code must be text"}, 400
+                    )
+                    return
+                if set_directly is not None and not isinstance(set_directly, bool):
+                    self._json(
+                        {"ok": False, "error": "set_directly must be boolean"}, 400
+                    )
+                    return
+                try:
+                    with _action_slot():
+                        result = helpers.enter_screen_time_code(
+                            previous_code=previous_code, set_directly=set_directly
+                        )
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, 400)
+                    return
+                self._json({"ok": True, "result": result})
             elif path == "/api/up":
                 # Restart tunnel + WDA (the fix after a replug). Slow (up to
                 # ~60s) but synchronous: the button disables while it runs.

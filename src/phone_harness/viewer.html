@@ -336,6 +336,11 @@
   #text-to { width:100%; margin-bottom:var(--s1); }
   #text-to, #text-msg { background:var(--panel); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px; }
+  #screen-time-code-controls { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin-bottom:var(--s2); }
+  #screen-time-old-code { flex:1 1 150px; min-width:0; background:var(--panel); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--r1); padding:6px 9px; font:inherit; font-size:12px; }
+  #screen-time-old-code:disabled { opacity:.45; background:var(--bg); color:var(--dim); cursor:not-allowed; }
+  #screen-time-direct-label { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:11.5px; white-space:nowrap; }
   #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   #text-row { display:flex; gap:var(--s1); align-items:stretch; }
   #text-msg { flex:1; resize:vertical; min-height:38px; }
@@ -471,6 +476,19 @@
     </div>
     <div id="dash-grid">
       <div id="col-actions" class="col">
+        <div class="sechead">
+          <h2 class="sec">TYPE RANDOM CODE</h2>
+          <span class="dim" id="screen-time-code-status" aria-live="polite">Ready</span>
+          <button id="btn-screen-time-code" title="Generate and set a random Screen Time passcode">Run</button>
+        </div>
+        <div id="screen-time-code-controls">
+          <input id="screen-time-old-code" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4"
+            autocomplete="off" aria-label="Previous Screen Time code" placeholder="Previous code">
+          <label id="screen-time-direct-label">
+            <input id="screen-time-direct" type="checkbox" checked>
+            Set directly (no previous code)
+          </label>
+        </div>
         <h2 class="sec">Text someone</h2>
         <div id="contact-chips" class="chips"></div>
         <input id="text-to" aria-label="Contact, as named in Messages" placeholder="Contact (as named in Messages)">
@@ -1601,6 +1619,55 @@ document.getElementById('btn-unlock').onclick = async () => {
     } catch (e) { showHint('Unlock failed.'); }
   });
   btn.disabled = false; btn.textContent = 'Unlock';
+};
+const screenTimeDirect = document.getElementById('screen-time-direct');
+const screenTimeOldCode = document.getElementById('screen-time-old-code');
+const screenTimeCodeStatus = document.getElementById('screen-time-code-status');
+function updateScreenTimeCodeMode() {
+  screenTimeOldCode.disabled = screenTimeDirect.checked;
+  if (screenTimeDirect.checked) screenTimeOldCode.value = '';
+}
+screenTimeDirect.onchange = updateScreenTimeCodeMode;
+updateScreenTimeCodeMode();
+document.getElementById('btn-screen-time-code').onclick = async () => {
+  const btn = document.getElementById('btn-screen-time-code');
+  if (phoneBusy()) return;
+  const direct = screenTimeDirect.checked;
+  const previousCode = screenTimeOldCode.value;
+  if (!direct && !/^[0-9]{4}$/.test(previousCode)) {
+    screenTimeCodeStatus.textContent = 'Enter 4 digits';
+    showHint('Enter the current four-digit Screen Time code, or select direct setup.');
+    return;
+  }
+  const prompt = direct
+    ? 'Set a random Screen Time code? This only works when no Screen Time code is already set.'
+    : 'Replace the current Screen Time code? The previous code will be used once, then a new random code will be set.';
+  if (!confirm(prompt + ' Keep the generated viewer executable private.')) return;
+  btn.disabled = true; btn.textContent = 'Setting Screen Time code…';
+  screenTimeDirect.disabled = true;
+  screenTimeOldCode.disabled = true;
+  screenTimeCodeStatus.textContent = 'Running…';
+  await withBusy('SETTING RANDOM CODE', async () => {
+    try {
+      const r = await fetch('/api/screen-time-code', {
+        method:'POST', headers:JSON_HDR,
+        body: JSON.stringify({
+          previous_code: direct ? null : previousCode,
+          set_directly: direct
+        })
+      });
+      const j = await r.json();
+      screenTimeCodeStatus.textContent = r.ok && j.ok ? 'Complete' : 'Failed';
+      showHint(r.ok && j.ok ? j.result : (j.error || 'Could not set Screen Time code.'));
+    } catch (e) {
+      screenTimeCodeStatus.textContent = 'Failed';
+      showHint('Could not set Screen Time code.');
+    }
+  });
+  screenTimeOldCode.value = '';
+  screenTimeDirect.disabled = false;
+  updateScreenTimeCodeMode();
+  btn.disabled = false; btn.textContent = 'Run';
 };
 document.getElementById('btn-lock').onclick = async () => {
   const btn = document.getElementById('btn-lock');

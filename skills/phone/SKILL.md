@@ -68,7 +68,7 @@ none of which you can learn by looking at the screen.
 | `get_clipboard()` / `set_clipboard(t)` | read or write the iPhone system clipboard |
 | `open_app("messages", wait_seconds=0)` | friendly name or bundle id; `wait_seconds>0` confirms it reached the foreground and raises if it never did (the only foreground-confirmed launch that does not need the bundle id) |
 | `current_app()` / `wait_for_app(bundle_id)` | frontmost app / wait until one is |
-| `enter_screen_time_code(code)` | open Settings → Screen Time and enter a four-digit code only when iOS shows its Screen Time passcode prompt; the value is redacted from the activity log |
+| `enter_screen_time_code(previous_code=None, set_directly=None)` | generate a four-digit code, build its viewer at `SCREEN_TIME_CODE_EXE`, then set and confirm it in Settings → Screen Time; pass the current code to replace one, or set `set_directly=True` for first-time setup; the previous viewer is kept unless iOS accepts the new code |
 | `open_apps()` / `close_app(name)` | the app switcher's contents `[{name, bundle_id, pid}]`, newest first, read over USB; force-quit one (same names as `open_app`). The switcher SCREEN cannot be opened: WDA touches never reach the home-indicator zone (measured) |
 | `screenshot("out.png")` / `press_home()` / `wait_stable()` / `unlock()` | utilities |
 

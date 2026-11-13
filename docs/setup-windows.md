@@ -122,6 +122,9 @@ python scripts/generate_screen_time_code.py
 
 The script generates a zero-padded four-digit code and builds a Windows
 executable at that path. Launch it to see an immediate countdown in a small,
-always-on-top window; the code appears when the 15 seconds are up. The code is
-embedded in the executable; keep the file private and rebuild it to generate a
-different code.
+always-on-top window; the code appears when the 7 seconds are up. The code is
+embedded in the executable; you may block it on the computer (like using Cold Turkey).
+The executable only reveals it from the configured path; moving or renaming it
+makes the viewer refuse to display the code. The agent workflow accepts an
+existing Screen Time code as `previous_code`, or uses `set_directly=True` when
+creating the first one.

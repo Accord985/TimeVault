@@ -7,9 +7,12 @@ All coordinates are in points (what the UI tree uses), origin top-left.
 from __future__ import annotations
 
 import difflib
+import importlib.util
 import json
 import re
+import secrets
 import time
+import uuid
 from pathlib import Path
 
 from . import approval, capture, config, device, trust
@@ -959,35 +962,231 @@ def open_app(name: str, wait_seconds: float = 0.0) -> None:
         )
 
 
-def enter_screen_time_code(code: str) -> str:
-    """Open Settings > Screen Time and enter a four-digit Screen Time code.
+def _promote_screen_time_viewer(
+    staging_path: Path, output_path: Path, backup_path: Path
+) -> None:
+    """Install the staged viewer; roll back the saved viewer on any failure."""
+    had_previous = output_path.exists()
+    if had_previous:
+        try:
+            output_path.replace(backup_path)
+        except OSError:
+            raise WDAError("The previous Screen Time viewer could not be moved.") from None
 
-    The code is typed only when iOS visibly asks for the Screen Time
-    passcode. It is never included in the return value or action log.
+    try:
+        staging_path.replace(output_path)
+    except OSError as exc:
+        if had_previous and backup_path.exists():
+            try:
+                backup_path.replace(output_path)
+            except OSError:
+                raise WDAError(
+                    "Viewer promotion failed; the previous executable is preserved "
+                    f"at {backup_path}. The new viewer is staged at {staging_path}."
+                ) from None
+        raise WDAError("The new Screen Time viewer could not be installed.") from exc
+
+    if had_previous:
+        try:
+            backup_path.unlink()
+        except OSError:
+            # The operation is still considered failed. Put the original file
+            # back at its configured path before returning the error.
+            try:
+                output_path.replace(staging_path)
+                backup_path.replace(output_path)
+            except OSError:
+                raise WDAError(
+                    "The previous viewer could not be removed or fully restored. "
+                    f"Check {output_path}, {backup_path}, and {staging_path}."
+                ) from None
+            raise WDAError(
+                "The previous viewer could not be removed; it was restored and "
+                "the saved executable was left unchanged."
+            ) from None
+
+
+def enter_screen_time_code(
+    previous_code: str | None = None, set_directly: bool | None = None
+) -> str:
+    """Generate and set a Screen Time code, optionally replacing an existing one.
+
+    The current viewer is kept until the phone accepts the generated code.
+    Pass `previous_code` to change an existing code. `set_directly=True` starts
+    the no-existing-code setup flow. Codes never appear in results or logs.
     """
-    if not isinstance(code, str) or len(code) != 4 or not code.isdigit():
-        raise ValueError("Screen Time code must be exactly four digits.")
+    if set_directly is None:
+        set_directly = previous_code is None
+    if not isinstance(set_directly, bool):
+        raise ValueError("set_directly must be true or false.")
+    if set_directly and previous_code is not None:
+        raise ValueError("Choose direct setup or provide the previous code, not both.")
+    if not set_directly and previous_code is None:
+        raise ValueError("Provide the previous Screen Time code or choose direct setup.")
+    if previous_code is not None and (
+        not isinstance(previous_code, str)
+        or re.fullmatch(r"[0-9]{4}", previous_code) is None
+    ):
+        raise ValueError("Previous Screen Time code must be exactly four digits.")
 
-    open_app("Settings", wait_seconds=10)
-    if not find_text("Screen Time", exact=True):
-        scroll_until_found("Screen Time", max_scrolls=8, exact=True)
-    tap_text("Screen Time", exact=True)
+    script_path = config.REPO_ROOT / "scripts" / "generate_screen_time_code.py"
+    spec = importlib.util.spec_from_file_location(
+        "sidetap_code_viewer_builder", script_path
+    )
+    if spec is None or spec.loader is None:
+        raise WDAError("Could not load the Screen Time code viewer builder.")
+    builder_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder_module)
 
-    prompt = wait_for_text("Enter Screen Time Passcode", timeout=8)
-    if prompt is None:
-        raise WDAError(
-            "Settings > Screen Time did not show the Screen Time passcode prompt; "
-            "no code was entered."
+    try:
+        output_path = builder_module.configured_output_path()
+    except (OSError, ValueError) as exc:
+        raise WDAError(str(exc)) from None
+    if output_path.exists() and not output_path.is_file():
+        raise WDAError("SCREEN_TIME_CODE_EXE points to an existing non-file path.")
+
+    code = f"{secrets.randbelow(10_000):04d}"
+    staging_path = output_path.with_name(
+        f"{output_path.stem}.pending-{uuid.uuid4().hex}.exe"
+    )
+    backup_path = output_path.with_name(
+        f"{output_path.stem}.previous-{uuid.uuid4().hex}.exe"
+    )
+    code_accepted = False
+
+    try:
+        builder_module.build_screen_time_code_viewer(
+            code, staging_path, expected_location=output_path
         )
 
-    _invalidate_tree()
-    pad_tree = ui_tree()
-    with redact_actions("Screen Time code entry"):
-        _enter_passcode(client(), code, pad_tree)
+        open_app("Settings", wait_seconds=10)
+        if find_text("Screen Time", exact=True):
+            tap_text("Screen Time", exact=True)
+        else:
+            scroll_until_found("Screen Time", max_scrolls=8, exact=True)
+            tap_text("Screen Time", exact=True)
 
-    if wait_for_text("Enter Screen Time Passcode", timeout=5) is not None:
-        raise WDAError("The Screen Time passcode prompt is still visible after entry.")
-    return "Screen Time code entered; the passcode prompt closed."
+        if find_text("Passcode & Management", exact=True):
+            tap_text("Passcode & Management", exact=True)
+
+        if set_directly:
+            if find_text("Change Screen Time Passcode"):
+                raise WDAError(
+                    "A Screen Time passcode is already set. Provide its current "
+                    "code to replace it; the existing viewer was kept."
+                )
+            start_option = None
+            for label in ("Lock Screen Time Settings", "Use Screen Time Passcode"):
+                hits = find_text(label, exact=True)
+                if hits:
+                    start_option = hits[0]
+                    break
+            if start_option is None:
+                start_option = scroll_until_found(
+                    "Lock Screen Time Settings", max_scrolls=8, exact=True
+                )
+            tap(start_option["x"], start_option["y"])
+
+            if wait_for_text("Screen Time Passcode", timeout=8) is None:
+                raise WDAError(
+                    "The Screen Time setup passcode prompt did not appear; "
+                    "the existing viewer was kept."
+                )
+            _invalidate_tree()
+            pad_tree = ui_tree()
+            with redact_actions("New Screen Time code entry"):
+                _tap_passcode_digits(client(), code, pad_tree)
+        else:
+            change = find_text("Change Screen Time Passcode")
+            if not change:
+                raise WDAError(
+                    "Could not find Change Screen Time Passcode; "
+                    "the existing viewer was kept."
+                )
+            tap(change[0]["x"], change[0]["y"])
+            if wait_for_text("Enter Screen Time Passcode", timeout=2) is None:
+                second_change = find_text("Change Screen Time Passcode", exact=True)
+                if second_change:
+                    tap(second_change[0]["x"], second_change[0]["y"])
+            if wait_for_text("Enter Screen Time Passcode", timeout=8) is None:
+                raise WDAError(
+                    "The current Screen Time code prompt did not appear; "
+                    "the existing viewer was kept."
+                )
+
+            _invalidate_tree()
+            pad_tree = ui_tree()
+            with redact_actions("Previous Screen Time code entry"):
+                _tap_passcode_digits(client(), previous_code, pad_tree)
+
+            screen = ocr()
+            if any(
+                any(
+                    token in row["text"].lower()
+                    for token in ("incorrect", "try again", "did not match")
+                )
+                for row in screen
+            ):
+                raise WDAError(
+                    "The previous Screen Time code was rejected; "
+                    "the existing viewer was kept."
+                )
+            new_prompt = wait_for_text("New", timeout=8)
+            if new_prompt is None:
+                new_prompt = wait_for_text("Set Screen Time Passcode", timeout=2)
+            if new_prompt is None:
+                raise WDAError(
+                    "The new Screen Time code prompt did not appear after the "
+                    "previous code; the existing viewer was kept."
+                )
+
+            _invalidate_tree()
+            pad_tree = ui_tree()
+            with redact_actions("New Screen Time code entry"):
+                _tap_passcode_digits(client(), code, pad_tree)
+
+        confirmation = wait_for_text("Re-enter", timeout=8)
+        if confirmation is None:
+            confirmation = wait_for_text("Confirm", timeout=2)
+        if confirmation is None:
+            raise WDAError(
+                "Screen Time did not show its passcode confirmation prompt; "
+                "the existing viewer was kept."
+            )
+
+        _invalidate_tree()
+        pad_tree = ui_tree()
+        with redact_actions("Screen Time code confirmation"):
+            _tap_passcode_digits(client(), code, pad_tree)
+
+        if (
+            wait_for_text("Re-enter", timeout=3) is not None
+            or find_text("Confirm")
+        ):
+            raise WDAError(
+                "Screen Time passcode confirmation did not complete; "
+                "the existing viewer was kept."
+            )
+        if any(
+            find_text(label)
+            for label in ("did not match", "Incorrect Passcode", "Try Again")
+        ):
+            raise WDAError(
+                "Screen Time rejected the passcode confirmation; "
+                "the existing viewer was kept."
+            )
+        code_accepted = True
+
+        _promote_screen_time_viewer(staging_path, output_path, backup_path)
+    except Exception:
+        if not code_accepted:
+            try:
+                staging_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+    return f"Screen Time passcode set; viewer saved to {output_path}."
 
 
 def _leads_with(text: str, contact: str) -> bool:
@@ -1730,6 +1929,33 @@ def _pad_dismissed(c, probe: str) -> bool:
             break
         time.sleep(0.3)
     return False
+
+
+def _tap_passcode_digits(c, passcode: str, pad_tree: dict) -> None:
+    """Tap a numeric setup pad without typing digits into an ambiguous prompt."""
+    centers = {}
+    for element in collect_texts(pad_tree):
+        if (
+            element["type"] in ("Button", "Key")
+            and len(element["text"]) == 1
+            and element["text"].isdigit()
+        ):
+            centers.setdefault(element["text"], (element["x"], element["y"]))
+    if any(digit not in centers for digit in passcode):
+        raise WDAError("The Screen Time passcode keypad was not fully readable.")
+
+    # Screen Time setup keeps the same numeric pad visible for the confirmation
+    # step, so use explicit taps instead of the unlock helper's pad-dismissal
+    # heuristic. That heuristic would mistake the confirmation pad for a miss.
+    c.set_wait_for_idle(0)
+    try:
+        for digit in passcode:
+            c.tap(*centers[digit], hold_ms=80)
+    finally:
+        try:
+            c.set_wait_for_idle(config.WDA_IDLE_WAIT)
+        except WDAError:
+            pass
 
 
 def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:

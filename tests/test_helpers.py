@@ -3286,3 +3286,262 @@ def test_enter_passcode_taps_with_a_short_hold(fast):
     assert stub.hold_ms == [80] * len(config.PHONE_PASSCODE), (
         f"pad taps asked for hold_ms {stub.hold_ms}"
     )
+
+
+@pytest.mark.parametrize("previous_code", ["123", "12345", "12a4", "１２３４"])
+def test_enter_screen_time_code_requires_four_ascii_digits(previous_code):
+    with pytest.raises(ValueError, match="exactly four digits"):
+        helpers.enter_screen_time_code(previous_code=previous_code)
+
+
+def test_screen_time_typing_error_keeps_previous_viewer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    viewer = tmp_path / "RevealCode.exe"
+    viewer.write_bytes(b"old viewer")
+
+    def build(_code, destination, *, expected_location):
+        assert expected_location == viewer
+        Path(destination).write_bytes(b"new viewer")
+
+    builder = SimpleNamespace(
+        configured_output_path=lambda: viewer,
+        build_screen_time_code_viewer=build,
+    )
+    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
+    monkeypatch.setattr(
+        helpers.importlib.util, "spec_from_file_location", lambda *_args: spec
+    )
+    monkeypatch.setattr(helpers.importlib.util, "module_from_spec", lambda _spec: builder)
+    monkeypatch.setattr(helpers, "open_app", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "find_text",
+        lambda text, exact=False: (
+            [{"x": 10, "y": 20}]
+            if text in ("Screen Time", "Lock Screen Time Settings")
+            else []
+        ),
+    )
+    monkeypatch.setattr(helpers, "tap_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(helpers, "tap", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "wait_for_text",
+        lambda text, **_kwargs: {"text": text}
+        if text == "Screen Time Passcode"
+        else None,
+    )
+    monkeypatch.setattr(helpers, "ui_tree", lambda: {})
+    monkeypatch.setattr(helpers, "client", lambda: object())
+
+    def disconnected(*_args, **_kwargs):
+        raise WDAError("phone disconnected while typing")
+
+    monkeypatch.setattr(helpers, "_tap_passcode_digits", disconnected)
+
+    with pytest.raises(WDAError, match="phone disconnected"):
+        helpers.enter_screen_time_code(set_directly=True)
+
+    assert viewer.read_bytes() == b"old viewer"
+    assert list(tmp_path.glob("*.pending-*.exe")) == []
+
+
+def test_rejected_previous_screen_time_code_stops_before_new_code(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    viewer = tmp_path / "RevealCode.exe"
+    viewer.write_bytes(b"old viewer")
+    entered_codes = []
+
+    def build(_code, destination, *, expected_location):
+        assert expected_location == viewer
+        Path(destination).write_bytes(b"new viewer")
+
+    builder = SimpleNamespace(
+        configured_output_path=lambda: viewer,
+        build_screen_time_code_viewer=build,
+    )
+    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
+    monkeypatch.setattr(
+        helpers.importlib.util, "spec_from_file_location", lambda *_args: spec
+    )
+    monkeypatch.setattr(helpers.importlib.util, "module_from_spec", lambda _spec: builder)
+    monkeypatch.setattr(helpers, "open_app", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "find_text",
+        lambda text, exact=False: (
+            [{"x": 10, "y": 20}]
+            if text in ("Screen Time", "Change Screen Time Passcode")
+            else []
+        ),
+    )
+    monkeypatch.setattr(helpers, "tap_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(helpers, "tap", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "wait_for_text",
+        lambda text, **_kwargs: {"text": text}
+        if text == "Enter Screen Time Passcode"
+        else None,
+    )
+    monkeypatch.setattr(helpers, "ui_tree", lambda: {})
+    monkeypatch.setattr(helpers, "client", lambda: object())
+    monkeypatch.setattr(helpers, "ocr", lambda: [{"text": "Incorrect Passcode"}])
+
+    def record_digits(_client, code, _tree):
+        entered_codes.append(code)
+
+    monkeypatch.setattr(helpers, "_tap_passcode_digits", record_digits)
+
+    with pytest.raises(WDAError, match="previous Screen Time code was rejected"):
+        helpers.enter_screen_time_code(previous_code="1234")
+
+    assert entered_codes == ["1234"]
+    assert viewer.read_bytes() == b"old viewer"
+    assert list(tmp_path.glob("*.pending-*.exe")) == []
+
+
+def test_direct_screen_time_setup_stops_if_code_already_exists(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    viewer = tmp_path / "RevealCode.exe"
+    viewer.write_bytes(b"old viewer")
+    entered_codes = []
+
+    def build(_code, destination, *, expected_location):
+        assert expected_location == viewer
+        Path(destination).write_bytes(b"new viewer")
+
+    builder = SimpleNamespace(
+        configured_output_path=lambda: viewer,
+        build_screen_time_code_viewer=build,
+    )
+    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
+    monkeypatch.setattr(
+        helpers.importlib.util, "spec_from_file_location", lambda *_args: spec
+    )
+    monkeypatch.setattr(helpers.importlib.util, "module_from_spec", lambda _spec: builder)
+    monkeypatch.setattr(helpers, "open_app", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "find_text",
+        lambda text, exact=False: (
+            [{"x": 10, "y": 20}]
+            if text in ("Screen Time", "Change Screen Time Passcode")
+            else []
+        ),
+    )
+    monkeypatch.setattr(helpers, "tap_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        helpers,
+        "_tap_passcode_digits",
+        lambda *_args, **_kwargs: entered_codes.append("unexpected"),
+    )
+
+    with pytest.raises(WDAError, match="passcode is already set"):
+        helpers.enter_screen_time_code(set_directly=True)
+
+    assert entered_codes == []
+    assert viewer.read_bytes() == b"old viewer"
+    assert list(tmp_path.glob("*.pending-*.exe")) == []
+
+
+def test_screen_time_viewer_location_check_uses_file_identity(tmp_path):
+    import importlib.util
+
+    script = Path(__file__).parents[1] / "scripts" / "generate_screen_time_code.py"
+    spec = importlib.util.spec_from_file_location("screen_time_viewer_builder_test", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    configured = tmp_path / "secrets" / "RevealCode.exe"
+    configured.parent.mkdir()
+    configured.write_bytes(b"viewer")
+    copy = tmp_path / "copy" / "RevealCode.exe"
+    copy.parent.mkdir()
+    copy.write_bytes(configured.read_bytes())
+
+    assert module._same_executable_location(configured, configured.resolve())
+    assert not module._same_executable_location(copy, configured)
+
+
+def test_viewer_build_embeds_final_path_not_staging_path(tmp_path, monkeypatch):
+    import importlib.util
+
+    script = Path(__file__).parents[1] / "scripts" / "generate_screen_time_code.py"
+    spec = importlib.util.spec_from_file_location("screen_time_viewer_build_test", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    expected = tmp_path / "secrets" / "RevealCode.exe"
+    staging = tmp_path / "secrets" / "RevealCode.pending.exe"
+    captured_source = []
+
+    def fake_pyinstaller(args, **_kwargs):
+        source_path = Path(args[-1])
+        source = source_path.read_text(encoding="utf-8")
+        compile(source, str(source_path), "exec")
+        captured_source.append(source)
+        dist = Path(args[args.index("--distpath") + 1])
+        dist.mkdir(parents=True)
+        (dist / "ScreenTimeCode.exe").write_bytes(b"built viewer")
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.subprocess, "run", fake_pyinstaller)
+    module.build_screen_time_code_viewer(
+        "1234", staging, expected_location=expected
+    )
+
+    assert staging.read_bytes() == b"built viewer"
+    assert str(expected.resolve()) in captured_source[0]
+    assert "Path(actual).samefile(expected)" in captured_source[0]
+    assert "from pathlib import Path" in captured_source[0]
+
+
+def test_viewer_promotion_failure_restores_previous_file(tmp_path, monkeypatch):
+    previous = tmp_path / "RevealCode.exe"
+    staged = tmp_path / "RevealCode.pending.exe"
+    backup = tmp_path / "RevealCode.previous.exe"
+    previous.write_bytes(b"old viewer")
+    staged.write_bytes(b"new viewer")
+
+    original_replace = Path.replace
+
+    def fail_staged_replace(self, target):
+        if self == staged:
+            raise PermissionError("simulated promotion failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_staged_replace)
+    with pytest.raises(WDAError, match="could not be installed"):
+        helpers._promote_screen_time_viewer(staged, previous, backup)
+
+    assert previous.read_bytes() == b"old viewer"
+    assert staged.read_bytes() == b"new viewer"
+    assert not backup.exists()
+
+
+def test_viewer_cleanup_failure_rolls_back_new_file(tmp_path, monkeypatch):
+    previous = tmp_path / "RevealCode.exe"
+    staged = tmp_path / "RevealCode.pending.exe"
+    backup = tmp_path / "RevealCode.previous.exe"
+    previous.write_bytes(b"old viewer")
+    staged.write_bytes(b"new viewer")
+    original_unlink = Path.unlink
+
+    def fail_backup_delete(self, *args, **kwargs):
+        if self == backup:
+            raise PermissionError("simulated cleanup failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_backup_delete)
+    with pytest.raises(WDAError, match="was restored"):
+        helpers._promote_screen_time_viewer(staged, previous, backup)
+
+    assert previous.read_bytes() == b"old viewer"
+    assert staged.read_bytes() == b"new viewer"
+    assert not backup.exists()
