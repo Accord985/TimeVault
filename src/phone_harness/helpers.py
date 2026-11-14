@@ -11,6 +11,7 @@ import importlib.util
 import json
 import re
 import secrets
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +20,18 @@ from . import approval, capture, config, device, trust
 from .wda_client import WDAClient, WDAError, activity_file, redact_actions
 
 _client: WDAClient | None = None
+_screen_time_progress = threading.local()
+
+
+def _set_screen_time_progress_callback(callback) -> None:
+    """Set a per-thread progress hook for the viewer's long Screen Time flow."""
+    _screen_time_progress.callback = callback
+
+
+def _report_screen_time_progress(message: str) -> None:
+    callback = getattr(_screen_time_progress, "callback", None)
+    if callback is not None:
+        callback(message)
 
 
 def client() -> WDAClient:
@@ -1059,15 +1072,25 @@ def enter_screen_time_code(
             code, staging_path, expected_location=output_path
         )
 
-        open_app("Settings", wait_seconds=10)
+        _report_screen_time_progress("Opening Settings on phone…")
+        open_app("Settings", wait_seconds=2)
         if find_text("Screen Time", exact=True):
             tap_text("Screen Time", exact=True)
         else:
             scroll_until_found("Screen Time", max_scrolls=8, exact=True)
             tap_text("Screen Time", exact=True)
 
-        if find_text("Passcode & Management", exact=True):
-            tap_text("Passcode & Management", exact=True)
+        # Screen Time's Settings page can finish loading after open_app()'s
+        # foreground check. Wait for the passcode section before deciding it
+        # is absent; otherwise the old-code path can fail on a stale/partial
+        # snapshot even though Settings opened correctly.
+        management_hits = find_text("Passcode & Management", exact=True)
+        management = management_hits[0] if management_hits else None
+        if management is None:
+            management = wait_for_text("Passcode & Management", timeout=2.5, exact=True)
+        if management:
+            tap(management["x"], management["y"])
+            _invalidate_tree()
 
         if set_directly:
             if find_text("Change Screen Time Passcode"):
@@ -1087,7 +1110,7 @@ def enter_screen_time_code(
                 )
             tap(start_option["x"], start_option["y"])
 
-            if wait_for_text("Screen Time Passcode", timeout=8) is None:
+            if wait_for_text("Enter New Screen Time Passcode", timeout=5) is None:
                 raise WDAError(
                     "The Screen Time setup passcode prompt did not appear; "
                     "the existing viewer was kept."
@@ -1096,19 +1119,36 @@ def enter_screen_time_code(
             pad_tree = ui_tree()
             with redact_actions("New Screen Time code entry"):
                 _tap_passcode_digits(client(), code, pad_tree)
+            _invalidate_tree()
         else:
-            change = find_text("Change Screen Time Passcode")
-            if not change:
-                raise WDAError(
-                    "Could not find Change Screen Time Passcode; "
-                    "the existing viewer was kept."
+            change = wait_for_text("Change Screen Time Passcode", timeout=2.5)
+            if change is None:
+                change_hits = find_text("Change Screen Time Passcode")
+                change = change_hits[0] if change_hits else None
+            if change is None:
+                try:
+                    change = scroll_until_found("Change Screen Time Passcode", max_scrolls=3)
+                except WDAError:
+                    raise WDAError(
+                        "Could not find Change Screen Time Passcode in Settings. "
+                        "Open Screen Time and its passcode settings, then retry; "
+                        "the existing viewer was kept."
+                    ) from None
+            tap(change["x"], change["y"])
+            old_prompt = wait_for_text("Enter Old Screen Time Passcode", timeout=2.5)
+            if old_prompt is None:
+                # With an existing code, the first tap opens a confirmation
+                # sheet with another button carrying the same label. Wait for
+                # it only when the old-code prompt text has not appeared.
+                second_change = wait_for_text(
+                    "Change Screen Time Passcode", timeout=2.5, exact=True
                 )
-            tap(change[0]["x"], change[0]["y"])
-            if wait_for_text("Enter Screen Time Passcode", timeout=2) is None:
-                second_change = find_text("Change Screen Time Passcode", exact=True)
                 if second_change:
-                    tap(second_change[0]["x"], second_change[0]["y"])
-            if wait_for_text("Enter Screen Time Passcode", timeout=8) is None:
+                    tap(second_change["x"], second_change["y"])
+                    old_prompt = wait_for_text(
+                        "Enter Old Screen Time Passcode", timeout=5
+                    )
+            if old_prompt is None:
                 raise WDAError(
                     "The current Screen Time code prompt did not appear; "
                     "the existing viewer was kept."
@@ -1118,22 +1158,9 @@ def enter_screen_time_code(
             pad_tree = ui_tree()
             with redact_actions("Previous Screen Time code entry"):
                 _tap_passcode_digits(client(), previous_code, pad_tree)
-
-            screen = ocr()
-            if any(
-                any(
-                    token in row["text"].lower()
-                    for token in ("incorrect", "try again", "did not match")
-                )
-                for row in screen
-            ):
-                raise WDAError(
-                    "The previous Screen Time code was rejected; "
-                    "the existing viewer was kept."
-                )
-            new_prompt = wait_for_text("New", timeout=8)
-            if new_prompt is None:
-                new_prompt = wait_for_text("Set Screen Time Passcode", timeout=2)
+            _invalidate_tree()
+            # The next named prompt is the only check that the old code worked.
+            new_prompt = wait_for_text("Enter New Screen Time Passcode", timeout=5)
             if new_prompt is None:
                 raise WDAError(
                     "The new Screen Time code prompt did not appear after the "
@@ -1144,10 +1171,9 @@ def enter_screen_time_code(
             pad_tree = ui_tree()
             with redact_actions("New Screen Time code entry"):
                 _tap_passcode_digits(client(), code, pad_tree)
+            _invalidate_tree()
 
-        confirmation = wait_for_text("Re-enter", timeout=8)
-        if confirmation is None:
-            confirmation = wait_for_text("Confirm", timeout=2)
+        confirmation = wait_for_text("Verify New Screen Time Passcode", timeout=5)
         if confirmation is None:
             raise WDAError(
                 "Screen Time did not show its passcode confirmation prompt; "
@@ -1158,23 +1184,7 @@ def enter_screen_time_code(
         pad_tree = ui_tree()
         with redact_actions("Screen Time code confirmation"):
             _tap_passcode_digits(client(), code, pad_tree)
-
-        if (
-            wait_for_text("Re-enter", timeout=3) is not None
-            or find_text("Confirm")
-        ):
-            raise WDAError(
-                "Screen Time passcode confirmation did not complete; "
-                "the existing viewer was kept."
-            )
-        if any(
-            find_text(label)
-            for label in ("did not match", "Incorrect Passcode", "Try Again")
-        ):
-            raise WDAError(
-                "Screen Time rejected the passcode confirmation; "
-                "the existing viewer was kept."
-            )
+        _invalidate_tree()
         code_accepted = True
 
         _promote_screen_time_viewer(staging_path, output_path, backup_path)

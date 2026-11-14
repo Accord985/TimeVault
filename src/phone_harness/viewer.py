@@ -41,6 +41,12 @@ _BOOT_ID = str(os.getpid()) + "-" + str(int(time.time()))
 _FIX_LOCK = threading.Lock()
 _FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
 
+# Status for the synchronous Screen Time operation. The phone workflow holds
+# _ACTION_LOCK, so this small independent endpoint lets the page show progress
+# while its POST waits for PyInstaller and WDA.
+_SCREEN_TIME_CODE_LOCK = threading.Lock()
+_SCREEN_TIME_CODE_JOB = {"running": False, "message": "", "ok": None}
+
 # Same shape for the "Pull photos" job. It never takes _ACTION_LOCK: the pull
 # rides AFC over USB, not WDA, so gestures and the agent stay unblocked — and
 # a first-ever pull of a full camera roll can run for minutes, far past what
@@ -837,6 +843,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/fix-input":
                 with _FIX_LOCK:
                     self._json(dict(_FIX_JOB))
+            elif path == "/api/screen-time-code-status":
+                with _SCREEN_TIME_CODE_LOCK:
+                    self._json(dict(_SCREEN_TIME_CODE_JOB))
             elif path == "/api/pull-photos":
                 with _PHOTO_LOCK:
                     self._json(dict(_PHOTO_JOB))
@@ -1139,14 +1148,40 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error": "set_directly must be boolean"}, 400
                     )
                     return
+                def progress(message: str) -> None:
+                    with _SCREEN_TIME_CODE_LOCK:
+                        _SCREEN_TIME_CODE_JOB.update(running=True, message=message)
+
                 try:
-                    with _action_slot():
-                        result = helpers.enter_screen_time_code(
-                            previous_code=previous_code, set_directly=set_directly
+                    with _SCREEN_TIME_CODE_LOCK:
+                        _SCREEN_TIME_CODE_JOB.update(
+                            running=True, message="Building code viewer…", ok=None
                         )
+                    helpers._set_screen_time_progress_callback(progress)
+                    try:
+                        with _action_slot():
+                            result = helpers.enter_screen_time_code(
+                                previous_code=previous_code, set_directly=set_directly
+                            )
+                    finally:
+                        helpers._set_screen_time_progress_callback(None)
                 except ValueError as exc:
+                    with _SCREEN_TIME_CODE_LOCK:
+                        _SCREEN_TIME_CODE_JOB.update(
+                            running=False, message=str(exc), ok=False
+                        )
                     self._json({"ok": False, "error": str(exc)}, 400)
                     return
+                except Exception as exc:
+                    with _SCREEN_TIME_CODE_LOCK:
+                        _SCREEN_TIME_CODE_JOB.update(
+                            running=False, message=str(exc), ok=False
+                        )
+                    raise
+                with _SCREEN_TIME_CODE_LOCK:
+                    _SCREEN_TIME_CODE_JOB.update(
+                        running=False, message="Complete", ok=True
+                    )
                 self._json({"ok": True, "result": result})
             elif path == "/api/up":
                 # Restart tunnel + WDA (the fix after a replug). Slow (up to

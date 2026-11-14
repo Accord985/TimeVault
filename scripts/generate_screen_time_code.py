@@ -112,7 +112,7 @@ def build_screen_time_code_viewer(
         build_dir = temp / "build"
         dist_dir = temp / "dist"
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     sys.executable,
                     "-m",
@@ -132,13 +132,28 @@ def build_screen_time_code_viewer(
                     str(app_source),
                 ],
                 cwd=REPO_ROOT,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
             )
-        except subprocess.CalledProcessError:
-            raise RuntimeError("Failed to create Screen time code viewer.") from None
-        shutil.copy2(dist_dir / "ScreenTimeCode.exe", output_path)
+        except OSError as exc:
+            raise RuntimeError(f"Could not start PyInstaller: {exc}") from None
+        if result.returncode:
+            # Keep the useful end of PyInstaller's diagnostic. Its normal log
+            # can be large, and the viewer's hint is deliberately short.
+            detail = (result.stderr or result.stdout or "").strip()
+            if detail:
+                detail = " ".join(detail.split())[-1200:]
+                raise RuntimeError(
+                    f"PyInstaller exited with code {result.returncode}: {detail}"
+                )
+            raise RuntimeError(
+                f"PyInstaller exited with code {result.returncode} without an error message."
+            )
+        built_exe = dist_dir / "ScreenTimeCode.exe"
+        if not built_exe.is_file():
+            raise RuntimeError("PyInstaller finished but did not create ScreenTimeCode.exe.")
+        shutil.copy2(built_exe, output_path)
     return output_path
 
 
